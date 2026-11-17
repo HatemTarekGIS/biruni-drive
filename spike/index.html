@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Biruni GIS · Drive test</title>
+<style>
+body{margin:0;font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif;background:#0E1615;color:#E6EEED}
+.w{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:19px;margin:6px 0 2px}.d{color:#9AABAE;font-size:13px}
+button{display:block;width:100%;margin:8px 0;padding:12px;border:0;border-radius:10px;background:#0E7C74;color:#fff;font-size:15px;text-align:start}
+button.s{background:#26403D}
+textarea{width:100%;height:280px;background:#15201F;color:#cfe;border:1px solid #26403D;border-radius:8px;font:12px/1.4 ui-monospace,Consolas,monospace}
+input[type=file]{display:none}
+.embed button{text-align:center;font-size:17px}
+</style>
+</head>
+<body>
+<div class="w" id="full">
+<h1>Biruni GIS · Google Drive test</h1>
+<div class="d">اضغط الأزرار بالترتيب من فوق لتحت، وفي الآخر «انسخ النتايج» وابعتها. الصفحة دي تجربة بس.</div>
+<button id="b1">1 · Sign in (تسجيل الدخول)</button>
+<button id="b2">2 · Silent renew (تجديد من غير شاشة)</button>
+<button id="b3">3 · Folder + small upload (رفع صغير)</button>
+<button id="b4">4 · Resumable 6 MB upload (رفع كبير على مراحل)</button>
+<button id="b5">5 · Find by tag (بحث بالعلامة)</button>
+<button id="b6">6 · Pick a folder + upload into it (اختيار فولدر)</button>
+<button id="b7">7 · Camera + renew in one tap (الكاميرا والتجديد مع بعض)</button>
+<button id="b9" class="s">انسخ النتايج (Copy results)</button>
+<input type="file" id="cam" accept="image/*" capture="environment">
+<textarea id="out" readonly></textarea>
+</div>
+<div class="w embed" id="emb" hidden>
+<h1>Biruni GIS</h1>
+<div class="d">Link your Google Drive. Only files Biruni creates are visible to it.</div>
+<button id="e1">Link Google Drive · اربط جوجل درايف</button>
+<div class="d" id="es"></div>
+</div>
+<script>
+const CID='890626226614-mcaetshbj40i1ffpfrg9l42d50dhl1c4.apps.googleusercontent.com';
+const SCOPE='https://www.googleapis.com/auth/drive.file';
+const APPID='890626226614';
+const PARENT='https://biruni-gis.com';
+const Q=new URLSearchParams(location.search);
+const EMBED=Q.get('embed')==='1';
+const $=id=>document.getElementById(id);
+const out=$('out');
+function log(s){out.value+=s+'\n';out.scrollTop=out.scrollHeight}
+log('UA: '+navigator.userAgent);
+log('mode: '+(EMBED?(window.opener?'popup':(window.parent!==window?'iframe':'embed-standalone')):'full'));
+let tok=null,exp=0,tc=null,pending=null,folderId=null,tagValue=null,email='';
+function load(src){return new Promise((ok,no)=>{const s=document.createElement('script');s.src=src;s.async=true;s.onload=ok;s.onerror=()=>no(new Error('load failed '+src));document.head.appendChild(s)})}
+function initTC(){
+ tc=google.accounts.oauth2.initTokenClient({client_id:CID,scope:SCOPE,
+  callback:r=>{const p=pending;pending=null;if(r.error){p&&p.no(new Error(r.error+' '+(r.error_description||'')));return}
+   tok=r.access_token;exp=Date.now()+(+r.expires_in||3600)*1000;p&&p.ok(r)},
+  error_callback:e=>{const p=pending;pending=null;p&&p.no(new Error('popup '+(e&&e.type)))}});
+}
+const ready=load('https://accounts.google.com/gsi/client').then(()=>{initTC();log('gsi loaded')}).catch(e=>log('FAIL '+e.message));
+function ask(prompt,hint){return new Promise((ok,no)=>{if(!tc){no(new Error('gsi not loaded yet'));return}
+ pending={ok,no};const o={prompt};if(hint)o.login_hint=hint;tc.requestAccessToken(o)})}
+async function api(url,opt){opt=opt||{};opt.headers=Object.assign({Authorization:'Bearer '+tok},opt.headers||{});return fetch(url,opt)}
+async function sha(buf){const h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('')}
+function rnd(n){const a=new Uint8Array(n);for(let i=0;i<n;i+=65536)crypto.getRandomValues(a.subarray(i,Math.min(n,i+65536)));return a}
+function need(){if(!tok)throw new Error('sign in first (button 1)')}
+async function step(name,fn){log('--- '+name);const t=performance.now();try{await fn();log('OK '+name+' ('+Math.round(performance.now()-t)+' ms)')}catch(e){log('FAIL '+name+': '+(e&&e.message||e))}}
+async function ensureFolder(){if(folderId)return folderId;
+ const r=await api('https://www.googleapis.com/drive/v3/files?fields=id',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({name:'Biruni spike',mimeType:'application/vnd.google-apps.folder'})});
+ const j=await r.json();if(!r.ok)throw new Error('folder '+r.status+' '+JSON.stringify(j).slice(0,200));folderId=j.id;return folderId}
+async function multipart(name,bytes,props,parent){
+ const meta={name,parents:[parent],appProperties:props};const b='bs'+Math.random().toString(36).slice(2);
+ const body=new Blob(['--'+b+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(meta)+'\r\n--'+b+'\r\nContent-Type: application/octet-stream\r\n\r\n',bytes,'\r\n--'+b+'--']);
+ const r=await api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,size,sha256Checksum,appProperties',
+  {method:'POST',headers:{'Content-Type':'multipart/related; boundary='+b},body});
+ const j=await r.json();return [r.status,j]}
+$('b1').onclick=()=>step('sign in',async()=>{
+ const r=await ask('consent');log('expires_in='+r.expires_in+' scope='+r.scope);
+ const a=await api('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress),storageQuota(limit,usage)');const j=await a.json();
+ email=j.user&&j.user.emailAddress||'';log('about '+a.status+' quota used='+(j.storageQuota&&j.storageQuota.usage)+' limit='+(j.storageQuota&&j.storageQuota.limit))});
+$('b2').onclick=()=>step('silent renew',async()=>{const old=tok;const r=await ask('',email);log('new token: '+(tok!==old)+' expires_in='+r.expires_in)});
+$('b3').onclick=()=>step('folder + multipart',async()=>{need();await ensureFolder();
+ const data=rnd(20000);const local=await sha(data);tagValue='spike-'+Date.now();
+ const [s,j]=await multipart('000001-test.bfp',data,{bfp:tagValue},folderId);
+ log('status '+s+' size='+j.size+' sha256Checksum='+(j.sha256Checksum?'present':'MISSING')+' match='+(j.sha256Checksum===local)+' appProperties='+JSON.stringify(j.appProperties))});
+$('b4').onclick=()=>step('resumable 6 MB',async()=>{need();await ensureFolder();
+ const n=6*1024*1024,data=rnd(n),local=await sha(data);
+ const r=await api('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size,sha256Checksum',
+  {method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':'application/octet-stream','X-Upload-Content-Length':String(n)},
+   body:JSON.stringify({name:'000002-big.bfp',parents:[folderId]})});
+ const loc=r.headers.get('Location');log('start '+r.status+' Location readable='+!!loc);if(!loc)throw new Error('no Location header (CORS)');
+ const c=4*262144;
+ let p=await fetch(loc,{method:'PUT',headers:{'Content-Range':'bytes 0-'+(c-1)+'/'+n},body:data.subarray(0,c)});
+ log('chunk1 '+p.status+' Range='+p.headers.get('Range'));
+ p=await fetch(loc,{method:'PUT',headers:{'Content-Range':'bytes */'+n}});
+ const rg=p.headers.get('Range');log('status query '+p.status+' Range='+rg);
+ const from=rg?(+rg.split('-')[1]+1):c;
+ p=await fetch(loc,{method:'PUT',headers:{'Content-Range':'bytes '+from+'-'+(n-1)+'/'+n},body:data.subarray(from)});
+ const j=await p.json();log('final '+p.status+' size='+j.size+' sha match='+(j.sha256Checksum===local))});
+$('b5').onclick=()=>step('find by appProperties',async()=>{need();if(!tagValue)throw new Error('run 3 first');
+ const q=encodeURIComponent("appProperties has { key='bfp' and value='"+tagValue+"' } and trashed=false");
+ const r=await api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,name)');const j=await r.json();
+ log('status '+r.status+' found='+(j.files?j.files.length:'?')+' '+JSON.stringify(j).slice(0,160))});
+let picker=null;
+$('b6').onclick=()=>step('picker',async()=>{need();
+ if(!window.gapi)await load('https://apis.google.com/js/api.js');
+ if(!window.google||!google.picker)await new Promise((ok,no)=>gapi.load('picker',{callback:ok,onerror:()=>no(new Error('picker load'))}));
+ const key=Q.get('key')||'';log('developer key: '+(key?'yes':'none'));
+ const picked=await new Promise((ok,no)=>{
+  const mine=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setSelectFolderEnabled(true).setIncludeFolders(true).setMimeTypes('application/vnd.google-apps.folder');
+  const shared=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setSelectFolderEnabled(true).setIncludeFolders(true).setOwnedByMe(false).setMimeTypes('application/vnd.google-apps.folder');
+  let b=new google.picker.PickerBuilder().addView(mine).addView(shared).setOAuthToken(tok).setAppId(APPID)
+   .setCallback(d=>{const a=d[google.picker.Response.ACTION];if(a===google.picker.Action.PICKED)ok(d[google.picker.Response.DOCUMENTS][0]);else if(a===google.picker.Action.CANCEL)no(new Error('cancelled'))});
+  if(key)b=b.setDeveloperKey(key);
+  try{b.build().setVisible(true)}catch(e){no(e)}});
+ log('picked folder owned by me='+(picked.isShared===undefined?'?':!picked.isShared)+' id=…'+String(picked.id).slice(-6));
+ const [s,j]=await multipart('000003-into-picked.bfp',rnd(5000),{bfp:'spike-picked'},picked.id);
+ log('upload into picked folder: status '+s+' '+(s<300?'OK':JSON.stringify(j).slice(0,220)))});
+$('b7').onclick=()=>{log('--- camera + renew (one tap)');const t0=Date.now();
+ ask('',email).then(r=>log('token after one tap: OK in '+(Date.now()-t0)+' ms')).catch(e=>log('token after one tap: FAIL '+e.message));
+ $('cam').click()};
+$('cam').onchange=e=>{const f=e.target.files&&e.target.files[0];log('camera returned file: '+(f?(f.type+' '+f.size+' bytes'):'none'))};
+$('b9').onclick=async()=>{try{await navigator.clipboard.writeText(out.value);log('(copied)')}catch(e){out.select();document.execCommand('copy');log('(copied, old way)')}};
+/* embedded: the isolated sign-in helper. It only ever sends the token to biruni-gis.com */
+if(EMBED){$('full').hidden=true;$('emb').hidden=false;
+ const send=m=>{const t=window.opener||(window.parent!==window?window.parent:null);if(t)t.postMessage(m,PARENT)};
+ $('e1').onclick=async()=>{$('es').textContent='…';try{await ask(Q.get('again')?'':'consent');
+  send({type:'biruni-drive-token',token:tok,exp});$('es').textContent='✓';if(window.opener)setTimeout(()=>window.close(),400)}
+  catch(e){$('es').textContent='✗ '+e.message;send({type:'biruni-drive-error',error:String(e.message)})}};
+ ready.then(()=>send({type:'biruni-drive-ready'}));
+}
+</script>
+</body>
+</html>
