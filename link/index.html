@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-xCgonezsu6rRX7q/2EuUw2ezdg7z4yD0hro69E0Y8bA=' https://accounts.google.com/gsi/client; style-src 'sha256-/VfdGjmfNM2cmaifLWfRglJQ+boBzZToZcjcNyAZnr4='; connect-src https://accounts.google.com/gsi/ https://www.googleapis.com; frame-src https://accounts.google.com/gsi/; img-src 'none'; base-uri 'none'; form-action 'none'">
+<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-0znJsYBuAKCctwQx0Vyf4uELDIFLF4c2j+f8u1ws+AQ=' https://accounts.google.com/gsi/client https://apis.google.com; style-src 'unsafe-inline'; connect-src https://accounts.google.com/gsi/ https://www.googleapis.com https://apis.google.com; frame-src https://accounts.google.com/gsi/ https://docs.google.com https://drive.google.com https://apis.google.com; img-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
 <title>Biruni GIS · Google Drive</title>
@@ -12,16 +12,17 @@ button:disabled{background:#e5e7eb;border-color:#d1d5db;color:#6b7280;cursor:def
 .d{color:#52606d;font-size:13px;margin-top:6px;overflow-wrap:anywhere}
 .alone{max-width:520px;margin:24px auto;padding:0 16px}.alone h1{font-size:18px}
 </style></head><body>
-<div class="w" id="ui" hidden><button id="go" type="button" disabled>Google Drive</button><div class="d" id="who"></div></div>
+<div class="w" id="ui" hidden><div class="d" id="hint"></div><button id="go" type="button" disabled>Google Drive</button>
+<div class="d" id="who"></div><div class="d" id="csp"></div></div>
 <div class="alone" id="alone" hidden><h1>Biruni GIS</h1>
 <p>This page links a phone's Google Drive to Biruni's field photos page. Open the photos page from the office's
 QR code instead.</p><p dir="rtl">هذه الصفحة تربط جوجل درايف بصفحة صور الموقع في بيروني. افتح صفحة الصور من رمز QR الخاص بالمكتب.</p></div>
 <script>
-const CID='890626226614-mcaetshbj40i1ffpfrg9l42d50dhl1c4.apps.googleusercontent.com',SCOPE='https://www.googleapis.com/auth/drive.file',API='https://www.googleapis.com',PARENT='https://biruni-gis.com',GSI='https://accounts.google.com/gsi/client';
+const CID='890626226614-mcaetshbj40i1ffpfrg9l42d50dhl1c4.apps.googleusercontent.com',SCOPE='https://www.googleapis.com/auth/drive.file',API='https://www.googleapis.com',PARENT='https://biruni-gis.com',GSI='https://accounts.google.com/gsi/client',PICKER='https://apis.google.com/js/api.js',APPID='890626226614';
 const $=i=>document.getElementById(i);
 const TO=window.opener||(window.parent!==window?window.parent:null);
 const MODE=window.opener?'popup':(TO?'iframe':'alone');
-let nonce='',tc=null,gsiOk=false,gsiErr=false,pending=false;
+let nonce='',tc=null,gsiOk=false,gsiErr=false,pending=false,pick=null,tok=null,picking=false,autoPicked=false,pkLoad=null;
 function post(m){if(!TO)return;m.v=1;try{TO.postMessage(m,PARENT)}catch(e){}}
 function say(m){if(nonce){m.nonce=nonce;post(m)}}
 function keepTok(t,exp){try{sessionStorage.setItem('biruni-drive-tok',JSON.stringify({t:t,exp:exp}))}catch(e){}}
@@ -29,7 +30,31 @@ function cachedTok(){try{const c=JSON.parse(sessionStorage.getItem('biruni-drive
  if(c&&typeof c.t==='string'&&+c.exp-Date.now()>300000)return c}catch(e){}return null}
 function hint(){try{return localStorage.getItem('biruni-drive-hint')||''}catch(e){return ''}}
 function showWho(){const h=hint();$('who').textContent=h}
-function ready(){$('go').disabled=!(gsiOk&&nonce)||pending}
+function ready(){$('go').disabled=!(nonce&&(gsiOk||(pick&&tok)))||pending||picking}
+function tokOk(t){return t&&typeof t.t==='string'&&t.t&&t.t.length<=4096&&+t.exp-Date.now()>60000}
+/* ---- choosing the office's folder (only in the window, never in the small frame): Google Picker ---- */
+function loadPicker(){if(!pkLoad){pkLoad=new Promise((ok,no)=>{
+  const go=()=>{try{gapi.load('picker',{callback:ok,onerror:()=>no(new Error('load')),timeout:20000,
+   ontimeout:()=>no(new Error('timeout'))})}catch(e){no(e)}};
+  if(window.gapi&&gapi.load)return go();const s=document.createElement('script');s.src=PICKER;s.async=true;
+  s.onload=go;s.onerror=()=>no(new Error('script'));document.head.appendChild(s)});pkLoad.catch(()=>{pkLoad=null})}
+ return pkLoad}
+async function openPicker(){if(picking||!pick||!tokOk(tok))return;picking=true;ready();
+ try{await loadPicker();const P=google.picker,F='application/vnd.google-apps.folder';
+  const view=shared=>{const v=new P.DocsView(P.ViewId.FOLDERS).setSelectFolderEnabled(true).setIncludeFolders(true)
+   .setMimeTypes(F).setMode(P.DocsViewMode.LIST).setQuery(pick.name);if(shared)v.setOwnedByMe(false);return v};
+  new P.PickerBuilder().addView(view(true)).addView(view(false)).setOAuthToken(tok.t).setAppId(APPID)
+   .setCallback(onPick).build().setVisible(true)}
+ catch(e){picking=false;ready();say({type:'biruni-drive-error',code:'picker'})}}
+function onPick(d){const P=google.picker,a=d[P.Response.ACTION];
+ if(a===P.Action.PICKED){picking=false;ready();const doc=(d[P.Response.DOCUMENTS]||[])[0]||{};
+  const id=doc[P.Document.ID],name=doc[P.Document.NAME],mt=doc[P.Document.MIME_TYPE];
+  if(name===pick.name&&mt==='application/vnd.google-apps.folder'&&typeof id==='string'&&/^[\w-]{10,128}$/.test(id)){
+   $('hint').textContent='';say({type:'biruni-drive-folder',id:id,name:name});setTimeout(()=>window.close(),400)}
+  else $('hint').textContent=pick.wrong}
+ else if(a===P.Action.CANCEL){picking=false;ready();say({type:'biruni-drive-error',code:'pick_cancel'})}}
+document.addEventListener('securitypolicyviolation',e=>{
+ $('csp').textContent='CSP: '+e.effectiveDirective+' '+String(e.blockedURI||'').slice(0,100)});
 function fail(code){pending=false;ready();say({type:'biruni-drive-error',code:code})}
 async function whoAmI(tok){try{const r=await fetch(API+'/drive/v3/about?fields=user(emailAddress)',
   {headers:{Authorization:'Bearer '+tok}});const j=await r.json();const e=j&&j.user&&j.user.emailAddress;
@@ -39,16 +64,23 @@ function onToken(r){pending=false;ready();
  if(!google.accounts.oauth2.hasGrantedAllScopes(r,SCOPE)){say({type:'biruni-drive-error',code:'scope'});return}
  const exp=Date.now()+(+r.expires_in||3600)*1000;keepTok(r.access_token,exp);
  say({type:'biruni-drive-token',token:r.access_token,exp:exp,cached:false});
+ if(pick){tok={t:r.access_token,exp:exp};whoAmI(r.access_token);openPicker();return}
  whoAmI(r.access_token).then(()=>{if(MODE==='popup')setTimeout(()=>window.close(),400)})}
 function onError(e){const t=e&&e.type;fail(t==='popup_failed_to_open'?'popup_blocked':t==='popup_closed'?'closed':'other')}
-$('go').onclick=()=>{if(!tc||!nonce||pending)return;pending=true;ready();const h=hint();
+$('go').onclick=()=>{if(pick&&tokOk(tok)){openPicker();return}
+ if(!tc||!nonce||pending)return;pending=true;ready();const h=hint();
  const o={prompt:h?'':'select_account'};if(h)o.login_hint=h;try{tc.requestAccessToken(o)}catch(e){fail('other')}};
 window.addEventListener('message',e=>{
  if(!TO||e.origin!==PARENT||e.source!==TO)return;const m=e.data;
  if(!m||m.v!==1||m.type!=='biruni-drive-hello'||typeof m.nonce!=='string'||!/^[\w-]{8,64}$/.test(m.nonce))return;
  const fresh=nonce!==m.nonce;nonce=m.nonce;
  $('go').textContent=String(m.label||'Google Drive').slice(0,80);
- document.documentElement.dir=m.dir==='rtl'?'rtl':'ltr';ready();
+ document.documentElement.dir=m.dir==='rtl'?'rtl':'ltr';
+ const p=m.pick;
+ if(MODE==='popup'&&p&&typeof p==='object'&&/^biruni-photos-[0-9a-f]{16}$/.test(String(p.name))){
+  pick={name:p.name,wrong:String(p.wrong||'').slice(0,200)};$('hint').textContent=String(p.hint||'').slice(0,200);
+  const t={t:p.token,exp:+p.exp};if(tokOk(t))tok=t}
+ ready();if(pick&&tokOk(tok)&&!autoPicked){autoPicked=true;openPicker()}
  if(fresh){if(gsiErr)say({type:'biruni-drive-error',code:'gsi'});
   const c=cachedTok();if(c)say({type:'biruni-drive-token',token:c.t,exp:+c.exp,cached:true})}});
 if(MODE==='alone'){$('alone').hidden=false}
